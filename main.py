@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 from html import unescape
+from collections import defaultdict
 
 def fetch_and_parse_table(url):
     try:
@@ -14,11 +15,17 @@ def fetch_and_parse_table(url):
     tables = soup.find_all("table")
 
     target_table = None
+    header_map = {}
+
+    # Find the first table with "x-coordinate" in the headers
     for table in tables:
-        headers = table.find_all("tr")[0].find_all(["td", "th"])
-        headers_text = [unescape(cell.get_text(strip=True)) for cell in headers]
-        if "x-coordinate" in headers_text:
+        header_row = table.find("tr")
+        if not header_row:
+            continue
+        headers = [unescape(cell.get_text(strip=True)).lower() for cell in header_row.find_all(["td", "th"])]
+        if "x-coordinate" in headers:
             target_table = table
+            header_map = {header: idx for idx, header in enumerate(headers)}
             break
 
     if not target_table:
@@ -26,38 +33,62 @@ def fetch_and_parse_table(url):
         return []
 
     parsed_rows = []
-    header_cells = target_table.find_all("tr")[0].find_all(["td", "th"])
-    headers = [unescape(cell.get_text(strip=True)) for cell in header_cells]
+    data_rows = target_table.find_all("tr")[1:]  # skip header
 
-    for idx, row in enumerate(target_table.find_all("tr")[1:], start=1):  # Skip header row
+    for idx, row in enumerate(data_rows, start=1):
         cells = row.find_all(["td", "th"])
         if len(cells) != 3:
             print(f"Skipping malformed row at index {idx}: does not have exactly 3 columns")
             continue
 
-        values = []
-        malformed = False
-        for i, cell in enumerate(cells):
-            text = unescape(cell.get_text(strip=True))
-            header = headers[i].lower()
-            if header in ("x-coordinate", "y-coordinate"):
-                try:
-                    values.append(int(text))
-                except ValueError:
-                    print(f"Skipping malformed row at index {idx}: '{header}' is not an integer")
-                    malformed = True
-                    break
-            else:
-                values.append(text)
+        try:
+            x_val = unescape(cells[header_map["x-coordinate"]].get_text(strip=True))
+            y_val = unescape(cells[header_map["y-coordinate"]].get_text(strip=True))
+            x = int(x_val)
+            y = int(y_val)
+        except (KeyError, ValueError) as e:
+            print(f"Skipping malformed row at index {idx}: {e}")
+            continue
 
-        if not malformed:
-            parsed_rows.append(tuple(values))
+        # Get the character from the remaining column
+        try:
+            char_index = next(
+                i for i in range(3) if i not in (header_map["x-coordinate"], header_map["y-coordinate"])
+            )
+            character = unescape(cells[char_index].get_text(strip=True))
+        except StopIteration:
+            print(f"Skipping malformed row at index {idx}: No character column found.")
+            continue
+
+        parsed_rows.append((x, y, character))
 
     return parsed_rows
 
+
+def render_ascii_canvas(data_tuples):
+    # Group characters by y-coordinate
+    rows_by_y = defaultdict(dict)
+    for x, y, char in data_tuples:
+        rows_by_y[y][x] = char
+
+    if not rows_by_y:
+        print("No data to render.")
+        return
+
+    max_y = max(rows_by_y.keys())
+    min_y = min(rows_by_y.keys())
+
+    for y in range(max_y, min_y - 1, -1):
+        if y in rows_by_y:
+            row = rows_by_y[y]
+            max_x = max(row.keys())
+            line = ''.join(row.get(x, ' ') for x in range(max_x + 1))
+            print(line)
+        else:
+            print('')  # Blank line for missing y
+
+
 if __name__ == "__main__":
     url = "https://docs.google.com/document/d/e/2PACX-1vQGUck9HIFCyezsrBSnmENk5ieJuYwpt7YHYEzeNJkIb9OSDdx-ov2nRNReKQyey-cwJOoEKUhLmN9z/pub"
-    result = fetch_and_parse_table(url)
-    print("\nParsed table data:")
-    for row in result:
-        print(row)
+    parsed_data = fetch_and_parse_table(url)
+    render_ascii_canvas(parsed_data)
